@@ -1,0 +1,394 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, query, orderBy, serverTimestamp } from 'firebase/firestore';
+
+// Firebase configuration and initialization
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+// Global variables for Canvas environment
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Main App Component
+const App = () => {
+    const [user, setUser] = useState(null);
+    const [userId, setUserId] = useState('');
+    const [maintenanceRequests, setMaintenanceRequests] = useState([]);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [showModal, setShowModal] = useState(false);
+    const [modalMessage, setModalMessage] = useState('');
+
+    // Form states
+    const [dateNotified, setDateNotified] = useState('');
+    const [repairType, setRepairType] = useState('');
+    const [system, setSystem] = useState('');
+    const [workOrderNumber, setWorkOrderNumber] = useState('');
+    const [attachedImage, setAttachedImage] = useState(null);
+    const [area, setArea] = useState('');
+    const [floor, setFloor] = useState('');
+    const [building, setBuilding] = useState('');
+    const [symptoms, setSymptoms] = useState('');
+    const [actionTaken, setActionTaken] = useState('');
+    const [desiredDateTime, setDesiredDateTime] = useState('');
+    const [status, setStatus] = useState('รอดำเนินการ'); // Default status
+
+    // Authenticate user and set up auth state listener
+    useEffect(() => {
+        const setupAuth = async () => {
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase authentication error:", error);
+                showInfoModal(`เกิดข้อผิดพลาดในการยืนยันตัวตน: ${error.message}`);
+            }
+        };
+
+        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+            if (currentUser) {
+                setUser(currentUser);
+                setUserId(currentUser.uid);
+            } else {
+                setUserId(crypto.randomUUID()); // Use a random ID if not authenticated
+            }
+            setIsAuthReady(true);
+        });
+
+        setupAuth();
+        return () => unsubscribe();
+    }, []);
+
+    // Fetch maintenance requests when auth is ready and user ID is set
+    useEffect(() => {
+        if (!isAuthReady || !userId) return;
+
+        // Firestore collection path for public data
+        const collectionPath = `artifacts/${appId}/public/data/maintenanceRequests`;
+        const q = query(collection(db, collectionPath));
+
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            const requests = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setMaintenanceRequests(requests);
+        }, (error) => {
+            console.error("Error fetching maintenance requests:", error);
+            showInfoModal(`เกิดข้อผิดพลาดในการดึงข้อมูล: ${error.message}`);
+        });
+
+        return () => unsubscribe();
+    }, [isAuthReady, userId]);
+
+    // Function to show modal messages
+    const showInfoModal = (message) => {
+        setModalMessage(message);
+        setShowModal(true);
+    };
+
+    // Handle form submission
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+
+        if (!userId) {
+            showInfoModal('โปรดรอการยืนยันตัวตนก่อนส่งคำขอ');
+            return;
+        }
+
+        try {
+            const newRequest = {
+                dateNotified,
+                repairType,
+                system,
+                workOrderNumber,
+                // For image, we'll just store a placeholder or URL if uploaded. For simplicity, we'll skip actual file upload for now.
+                // In a real app, you'd upload to Firebase Storage and store the URL here.
+                attachedImageUrl: attachedImage ? 'placeholder_image_url' : null, // Placeholder for image URL
+                area,
+                floor,
+                building,
+                symptoms,
+                actionTaken,
+                desiredDateTime,
+                status,
+                reporterId: userId, // Store the ID of the user who reported
+                createdAt: serverTimestamp() // Timestamp for when the request was created
+            };
+
+            const collectionRef = collection(db, `artifacts/${appId}/public/data/maintenanceRequests`);
+            await addDoc(collectionRef, newRequest);
+
+            showInfoModal('แจ้งซ่อมบำรุงสำเร็จ!');
+            // Clear form fields after submission
+            setDateNotified('');
+            setRepairType('');
+            setSystem('');
+            setWorkOrderNumber('');
+            setAttachedImage(null);
+            setArea('');
+            setFloor('');
+            setBuilding('');
+            setSymptoms('');
+            setActionTaken('');
+            setDesiredDateTime('');
+            setStatus('รอดำเนินการ');
+
+        } catch (error) {
+            console.error("Error adding document: ", error);
+            showInfoModal(`เกิดข้อผิดพลาดในการแจ้งซ่อม: ${error.message}`);
+        }
+    };
+
+    // Handle status update
+    const handleStatusUpdate = async (requestId, newStatus) => {
+        try {
+            const requestRef = doc(db, `artifacts/${appId}/public/data/maintenanceRequests`, requestId);
+            await updateDoc(requestRef, { status: newStatus });
+            showInfoModal('อัปเดตสถานะสำเร็จ!');
+        } catch (error) {
+            console.error("Error updating document: ", error);
+            showInfoModal(`เกิดข้อผิดพลาดในการอัปเดตสถานะ: ${error.message}`);
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-inter text-gray-800">
+            {/* Modal for messages */}
+            {showModal && (
+                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full mx-4">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-4">ข้อมูล</h3>
+                        <p className="text-gray-700 mb-6">{modalMessage}</p>
+                        <button
+                            onClick={() => setShowModal(false)}
+                            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
+                        >
+                            ตกลง
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg p-6 md:p-8">
+                <h1 className="text-3xl font-bold text-center text-blue-700 mb-6">ระบบแจ้งซ่อมบำรุง</h1>
+                <p className="text-center text-sm text-gray-500 mb-6">
+                    User ID: <span className="font-mono text-blue-600 break-all">{userId}</span>
+                </p>
+
+                {/* Maintenance Request Form */}
+                <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
+                    <div className="col-span-1">
+                        <label htmlFor="dateNotified" className="block text-sm font-medium text-gray-700 mb-1">วันที่แจ้ง</label>
+                        <input
+                            type="date"
+                            id="dateNotified"
+                            value={dateNotified}
+                            onChange={(e) => setDateNotified(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                            required
+                        />
+                    </div>
+
+                    <div className="col-span-1">
+                        <label htmlFor="system" className="block text-sm font-medium text-gray-700 mb-1">ระบบงาน</label>
+                        <select
+                            id="system"
+                            value={system}
+                            onChange={(e) => setSystem(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                            required
+                        >
+                            <option value="">เลือกหมวดงาน</option>
+                            <option value="งานโครงสร้าง&โยธา">งานโครงสร้าง&โยธา</option>
+                            <option value="งานตกแต่งภายใน">งานตกแต่งภายใน</option>
+                            <option value="งานสถาปัตย์">งานสถาปัตย์</option>
+                            <option value="งานสุขภัณฑ์ ">งานสุขภัณฑ์</option>
+                            <option value="งานระบบไฟฟ้า">งานระบบไฟฟ้า</option>
+                            <option value="งานระบบสุขาภิบาล">งานระบบสุขาภิบาล</option>
+                            <option value="งานระบบปรับอากาศระบายอากาศ">งานระบบปรับอากาศระบายอากาศ</option>
+                            <option value="งานระบบป้องกันอักคีภัย">งานระบบป้องกันอักคีภัย</option>
+                            <option value="งานระบบห้องผ่าตัด">งานระบบห้องผ่าตัด</option>
+                            <option value="งานระบบแก๊ซทางการแพทย์">งานระบบแก๊ซทางการแพทย์</option>
+                            <option value="งานระบบ CCTV&Access Control">งานระบบ CCTV&Access Control</option>  
+                            <option value="งานระบบ Nurse Call">งานระบบ Nurse Call</option>      
+                            <option value="งานระบบ Queue ">งานระบบ Queue </option>      
+                            <option value="งานระบบ ลิฟต์ ">งานระบบลิฟต์ </option>                   
+                            <option value="อื่นๆ">อื่นๆ</option>
+                        </select>
+                    </div>
+
+                    <div className="col-span-1">
+                        <label htmlFor="workOrderNumber" className="block text-sm font-medium text-gray-700 mb-1">ผู้แจ้ง</label>
+                        <input
+                            type="text"
+                            id="workOrderNumber"
+                            value={workOrderNumber}
+                            onChange={(e) => setWorkOrderNumber(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        />
+                    </div>
+
+                    <div className="col-span-full">
+                        <label htmlFor="attachedImage" className="block text-sm font-medium text-gray-700 mb-1">รูปภาพแนบ</label>
+                        <input
+                            type="file"
+                            id="attachedImage"
+                            onChange={(e) => setAttachedImage(e.target.files[0])}
+                            className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                        />
+                        {attachedImage && (
+                            <p className="mt-2 text-sm text-gray-500">ไฟล์ที่เลือก: {attachedImage.name}</p>
+                        )}
+                    </div>
+
+                    <div className="col-span-1">
+                        <label htmlFor="building" className="block text-sm font-medium text-gray-700 mb-1">อาคาร</label>
+                        <input
+                            type="text"
+                            id="building"
+                            value={building}
+                            onChange={(e) => setBuilding(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                            required
+                        />
+                    </div>
+
+                    <div className="col-span-1">
+                        <label htmlFor="floor" className="block text-sm font-medium text-gray-700 mb-1">ชั้น</label>
+                        <input
+                            type="text"
+                            id="floor"
+                            value={floor}
+                            onChange={(e) => setFloor(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                            required
+                        />
+                    </div>
+
+                    <div className="col-span-full">
+                        <label htmlFor="area" className="block text-sm font-medium text-gray-700 mb-1">บริเวณพื้นที่</label>
+                        <input
+                            type="text"
+                            id="area"
+                            value={area}
+                            onChange={(e) => setArea(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                            required
+                        />
+                    </div>
+
+                    <div className="col-span-full">
+                        <label htmlFor="symptoms" className="block text-sm font-medium text-gray-700 mb-1">อาการ/ปัญหา</label>
+                        <textarea
+                            id="symptoms"
+                            rows="3"
+                            value={symptoms}
+                            onChange={(e) => setSymptoms(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                            required
+                        ></textarea>
+                    </div>
+
+                    <div className="col-span-full">
+                        <label htmlFor="actionTaken" className="block text-sm font-medium text-gray-700 mb-1">การดำเนินการเบื้องต้น (ถ้ามี)</label>
+                        <textarea
+                            id="actionTaken"
+                            rows="3"
+                            value={actionTaken}
+                            onChange={(e) => setActionTaken(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        ></textarea>
+                    </div>
+
+                    <div className="col-span-full">
+                        <label htmlFor="desiredDateTime" className="block text-sm font-medium text-gray-700 mb-1">วันเวลาที่ต้องการให้เข้าดำเนินการ</label>
+                        <input
+                            type="datetime-local"
+                            id="desiredDateTime"
+                            value={desiredDateTime}
+                            onChange={(e) => setDesiredDateTime(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        />
+                    </div>
+
+                    <div className="col-span-full">
+                        <label htmlFor="status" className="block text-sm font-medium text-gray-700 mb-1">สถานะติดตามการแล้วเสร็จ</label>
+                        <select
+                            id="status"
+                            value={status}
+                            onChange={(e) => setStatus(e.target.value)}
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        >
+                            <option value="รอดำเนินการ">รอดำเนินการ</option>
+                            <option value="กำลังดำเนินการ">กำลังดำเนินการ</option>
+                            <option value="เสร็จสิ้น">เสร็จสิ้น</option>
+                            <option value="ยกเลิก">ยกเลิก</option>
+                        </select>
+                    </div>
+
+                    <div className="col-span-full">
+                        <button
+                            type="submit"
+                            className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-200"
+                        >
+                            แจ้งซ่อมบำรุง
+                        </button>
+                    </div>
+                </form>
+
+                {/* Maintenance Request List */}
+                <h2 className="text-2xl font-bold text-blue-700 mb-4 mt-8">รายการแจ้งซ่อมบำรุง</h2>
+                {maintenanceRequests.length === 0 ? (
+                    <p className="text-gray-600 text-center">ยังไม่มีรายการแจ้งซ่อมบำรุง</p>
+                ) : (
+                    <div className="grid grid-cols-1 gap-4">
+                        {maintenanceRequests.map((request) => (
+                            <div key={request.id} className="bg-blue-50 p-4 rounded-lg shadow-sm border border-blue-200">
+                                <div className="flex justify-between items-start mb-2">
+                                    <h3 className="text-lg font-semibold text-blue-800">{request.symptoms}</h3>
+                                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                        request.status === 'รอดำเนินการ' ? 'bg-yellow-200 text-yellow-800' :
+                                        request.status === 'กำลังดำเนินการ' ? 'bg-blue-200 text-blue-800' :
+                                        request.status === 'เสร็จสิ้น' ? 'bg-green-200 text-green-800' :
+                                        'bg-red-200 text-red-800'
+                                    }`}>
+                                        {request.status}
+                                    </span>
+                                </div>
+                                <p className="text-sm text-gray-700 mb-1"><strong>วันที่แจ้ง:</strong> {request.dateNotified}</p>
+                                <p className="text-sm text-gray-700 mb-1"><strong>ประเภทงาน:</strong> {request.repairType}</p>
+                                <p className="text-sm text-gray-700 mb-1"><strong>ระบบ:</strong> {request.system}</p>
+                                <p className="text-sm text-gray-700 mb-1"><strong>บริเวณ:</strong> {request.area}, ชั้น {request.floor}, อาคาร {request.building}</p>
+                                {request.actionTaken && <p className="text-sm text-gray-700 mb-1"><strong>ดำเนินการเบื้องต้น:</strong> {request.actionTaken}</p>}
+                                {request.desiredDateTime && <p className="text-sm text-gray-700 mb-1"><strong>ต้องการให้เข้าดำเนินการ:</strong> {request.desiredDateTime}</p>}
+                                <p className="text-sm text-gray-700 mb-2"><strong>ผู้แจ้ง (ID):</strong> <span className="font-mono text-gray-600 break-all">{request.reporterId}</span></p>
+
+                                <div className="flex space-x-2 mt-3">
+                                    <select
+                                        value={request.status}
+                                        onChange={(e) => handleStatusUpdate(request.id, e.target.value)}
+                                        className="flex-grow px-3 py-1 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                    >
+                                        <option value="รอดำเนินการ">รอดำเนินการ</option>
+                                        <option value="กำลังดำเนินการ">กำลังดำเนินการ</option>
+                                        <option value="เสร็จสิ้น">เสร็จสิ้น</option>
+                                        <option value="ยกเลิก">ยกเลิก</option>
+                                    </select>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default App;
